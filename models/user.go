@@ -4,34 +4,51 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
-// user model
+// RECRUITER model
 
-type User struct {
-	ID         uuid.UUID
-	Name       string    `json:"name"`
-	Age        int       `json:"age"`
-	Place      string    `json:"place"`
-	Email      string    `json:"email"`
-	Gender     string    `json:"gender"`
-	ModifiedBy string    `json:"modified_by"`
-	ModifiedAt string    `json:"modified_At"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+type Recruiter struct {
+	BaseModel
+	Name         string  `gorm:"type:varchar(150);not null" json:"name"`
+	Email        string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"email"`
+	PhoneNumber  string  `gorm:"type:varchar(13);not null" json:"phone_number" validate:"required,e164"`
+	PasswordHash *string `gorm:"type:varchar(255)" json:"-"`
+
+	Role       string `gorm:"type:varchar(30);not null" json:"role"`
+	IsVerified bool   `gorm:"default:false" json:"is_verified"`
+	Status     string `gorm:"type:varchar(20);not null;default:ACTIVE" json:"status"`
+
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// organizer model
+// candidate model
+type Candidate struct {
+	BaseModel
+	Name        string  `gorm:"type:varchar(150);not null" json:"name"`
+	Email       string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"email" validate:"required,email"`
+	PhoneNumber *string `gorm:"type:varchar(13)" json:"phone_number,omitempty" validate:"omitempty,e164"`
 
-type Organizer struct {
-	ID               uuid.UUID
-	OrganizationName string `json:"org_name"`
-	Description      string `json:"description"`
-	Phone1           string `json:"phone1"`
-	Phone2           string `json:"phone2"`
-	Address          string `json:"address"`
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	ModifiedBy       string    `json:"modified_by"`
-	ModifiedAt       time.Time `json:"modified_At"`
+	IsVerified bool   `gorm:"default:false" json:"is_verified"`
+	Status     string `gorm:"type:varchar(20);not null;default:ACTIVE" json:"status"`
+
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// for unique id
+type BaseModel struct {
+	ID uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+}
+
+func (b *BaseModel) BeforeCreate(tx *gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+
+	return nil
 }
