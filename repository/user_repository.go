@@ -1,9 +1,11 @@
 package repository
 
 import (
-	"auth_system/models"
+	"context"
 	"errors"
 
+	"github.com/thoufeee/auth-system/models"
+	"github.com/thoufeee/common-system/middleware"
 	"gorm.io/gorm"
 )
 
@@ -18,17 +20,51 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 }
 
 // create user account
-func (r *UserRepository) Create(user *models.User) error {
-	return r.DB.Create(user).Error
+func (r *UserRepository) Create(
+	ctx context.Context,
+	user *models.User,
+) error {
+	logger := middleware.GetLogger(ctx)
+
+	if err := r.DB.WithContext(ctx).Create(user).Error; err != nil {
+		logger.Error(
+			"failed to create user",
+			"error", err,
+		)
+		return err
+	}
+
+	logger.Info(
+		"user created in database",
+		"user_id", user.ID,
+	)
+
+	return nil
 }
 
 // check the mail \\\
-func (r *UserRepository) GetByEmail(email string) (*models.User, error) {
+func (r *UserRepository) GetByEmail(
+	ctx context.Context,
+	email string,
+) (*models.User, error) {
+	logger := middleware.GetLogger(ctx)
+
 	var user models.User
 
-	err := r.DB.Where("email = ?", email).First(&user).Error
+	err := r.DB.WithContext(ctx).
+		Where("email = ?", email).
+		First(&user).Error
 
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("user not found by email")
+			return nil, err
+		}
+
+		logger.Error(
+			"failed to fetch user by email",
+			"error", err,
+		)
 		return nil, err
 	}
 
@@ -36,12 +72,28 @@ func (r *UserRepository) GetByEmail(email string) (*models.User, error) {
 }
 
 // check the phone ///
-func (r *UserRepository) GetByPhone(phone string) (*models.User, error) {
+func (r *UserRepository) GetByPhone(
+	ctx context.Context,
+	phone string,
+) (*models.User, error) {
+	logger := middleware.GetLogger(ctx)
+
 	var user models.User
 
-	err := r.DB.Where("phone = ?", phone).First(&user).Error
+	err := r.DB.WithContext(ctx).
+		Where("phone = ?", phone).
+		First(&user).Error
 
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("user not found by phone")
+			return nil, err
+		}
+
+		logger.Error(
+			"failed to fetch user by phone",
+			"error", err,
+		)
 		return nil, err
 	}
 
@@ -49,21 +101,27 @@ func (r *UserRepository) GetByPhone(phone string) (*models.User, error) {
 }
 
 // check funcinality
-func (r *UserRepository) Exists(email, phone string) (bool, error) {
+func (r *UserRepository) Exists(
+	ctx context.Context,
+	email string,
+	phone string,
+) (bool, error) {
+	logger := middleware.GetLogger(ctx)
+
 	var count int64
 
-	err := r.DB.model(&models.User{}).
+	err := r.DB.WithContext(ctx).
+		Model(&models.User{}).
 		Where("email = ? OR phone = ?", email, phone).
 		Count(&count).Error
 
 	if err != nil {
+		logger.Error(
+			"failed to check existing user",
+			"error", err,
+		)
 		return false, err
 	}
 
 	return count > 0, nil
-}
-
-// error
-func IsNotFound(err error) bool {
-	return errors.Is(err, gorm.ErrRecordNotFound)
 }
