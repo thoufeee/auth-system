@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// psql connection
 func ConnectPostgres() (*gorm.DB, error) {
 	host := os.Getenv("DB_HOST")
 	port := os.Getenv("DB_PORT")
