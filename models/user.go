@@ -13,7 +13,7 @@ type User struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	Name         string    `gorm:"not null" json:"name"`
 	Email        string    `gorm:"uniqueIndex;not null" json:"email"`
-	Age          int64     `gorm:"not null" json:"age"`
+	Age          int       `gorm:"not null" json:"age"`
 	Phone        string    `gorm:"uniqueIndex" json:"phone"`
 	PasswordHash string    `gorm:"not null" json:"-"`
 
