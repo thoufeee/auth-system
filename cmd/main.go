@@ -18,7 +18,7 @@ import (
 func main() {
 
 	//  Load environment variables
-	if err := godotenv.Load("config/env"); err != nil {
+	if err := godotenv.Load("config/.env"); err != nil {
 		slog.Warn("Environment file not found; using system environment variables")
 	}
 
