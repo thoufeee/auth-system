@@ -5,22 +5,42 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
 
 // redis connection
-func ConnectRedis(ctx context.Context) (*redis.Client, error) {
-	db, err := strconv.Atoi(os.Getenv("REDIS_DB"))
-	if err != nil {
-		db = 0
+func ConnectRedis() (*redis.Client, error) {
+	host := os.Getenv("REDIS_HOST")
+	port := os.Getenv("REDIS_PORT")
+	password := os.Getenv("REDIS_PASSWORD")
+
+	dbStr := os.Getenv("REDIS_DB")
+
+	db := 0
+
+	if dbStr != "" {
+		parsedDB, err := strconv.Atoi(dbStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid REDIS_DB: %w", err)
+		}
+		db = parsedDB
 	}
 
 	client := redis.NewClient(&redis.Options{
-		Addr:     fmt.Sprintf("%s:%s", os.Getenv("REDIS_HOST"), os.Getenv("REDIS_PORT")),
-		Password: os.Getenv("REDIS_PASSWORD"),
-		DB:       db,
+		Addr:         host + ":" + port,
+		Password:     password,
+		DB:           db,
+		PoolSize:     10,
+		MinIdleConns: 2,
 	})
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
