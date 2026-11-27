@@ -3,10 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/thoufeee/auth-system/dto"
 	"github.com/thoufeee/auth-system/models"
 	"github.com/thoufeee/auth-system/repository"
@@ -21,21 +20,26 @@ var (
 	ErrUserInactive       = errors.New("user account is inactive")
 )
 
+// structure of auth service
 type AuthService struct {
-	userRepo  *repository.UserRepository
-	jwtSecret []byte
+	userRepo         *repository.UserRepository
+	refreshTokenRepo *repository.RefreshTokenRepository
+	tokenService     *TokenService
 }
 
 func NewAuthService(
 	userRepo *repository.UserRepository,
-	jwtSecret string,
+	refreshTokenRepo *repository.RefreshTokenRepository,
+	tokenService *TokenService,
 ) *AuthService {
 	return &AuthService{
-		userRepo:  userRepo,
-		jwtSecret: []byte(jwtSecret),
+		userRepo:         userRepo,
+		refreshTokenRepo: refreshTokenRepo,
+		tokenService:     tokenService,
 	}
 }
 
+// register service
 func (s *AuthService) RegisterUser(
 	ctx context.Context,
 	req dto.RegisterRequest,
@@ -97,16 +101,18 @@ func (s *AuthService) RegisterUser(
 	}, nil
 }
 
+// login service
 func (s *AuthService) Login(
 	ctx context.Context,
 	req dto.LoginRequest,
 ) (*dto.AuthResponse, error) {
+
 	logger := middleware.GetLogger(ctx)
 
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	phone := strings.TrimSpace(req.Phone)
 
-	// Exactly one identifier must be provided.
+	// Exactly one identifier must be provided
 	if (email == "") == (phone == "") {
 		logger.Warn("login rejected: invalid login identifier")
 		return nil, ErrInvalidCredentials
@@ -128,7 +134,7 @@ func (s *AuthService) Login(
 		return nil, ErrInvalidCredentials
 	}
 
-	// Verify password.
+	// Verify password
 	if err := bcrypt.CompareHashAndPassword(
 		[]byte(user.PasswordHash),
 		[]byte(req.Password),
@@ -140,6 +146,7 @@ func (s *AuthService) Login(
 		return nil, ErrInvalidCredentials
 	}
 
+	// Verify account status
 	if user.Status != string(constants.UserActive) {
 		logger.Warn(
 			"login rejected: inactive account",
@@ -148,21 +155,46 @@ func (s *AuthService) Login(
 		return nil, ErrUserInactive
 	}
 
-	// Generate JWT.
-	expiresAt := time.Now().Add(15 * time.Minute)
-
-	claims := jwt.MapClaims{
-		"user_id": user.ID,
-		"role":    user.Role,
-		"exp":     expiresAt.Unix(),
-		"iat":     time.Now().Unix(),
+	// Generate access and refresh tokens
+	tokenPair, err := s.tokenService.GenerateTokenPair(
+		user.ID.String(),
+		string(user.Role),
+		"",
+	)
+	if err != nil {
+		logger.Error("token generation failed", "error", err)
+		return nil, err
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	// Hash refresh token before storing it
+	refreshTokenHash := s.tokenService.HashRefreshToken(
+		tokenPair.RefreshToken,
+	)
 
-	accessToken, err := token.SignedString(s.jwtSecret)
-	if err != nil {
-		logger.Error("JWT generation failed", "error", err)
+	// Create refresh token family
+	if err := s.refreshTokenRepo.CreateFamily(
+		ctx,
+		tokenPair.FamilyID,
+		user.ID.String(),
+		tokenPair.RefreshExpiry,
+	); err != nil {
+		logger.Error("refresh token family creation failed", "error", err)
+		return nil, err
+	}
+
+	// Create refresh token record
+	refreshToken := models.RefreshToken{
+		TokenHash: refreshTokenHash,
+		UserID:    user.ID.String(),
+		FamilyID:  tokenPair.FamilyID,
+		ExpiresAt: tokenPair.RefreshExpiry,
+	}
+
+	if err := s.refreshTokenRepo.Store(
+		ctx,
+		refreshToken,
+	); err != nil {
+		logger.Error("refresh token storage failed", "error", err)
 		return nil, err
 	}
 
@@ -172,10 +204,12 @@ func (s *AuthService) Login(
 	)
 
 	return &dto.AuthResponse{
-		AccessToken: accessToken,
-		TokenType:   "Bearer",
-		ExpiresAt:   expiresAt,
-		User: dto.UserResponse{
+		AccessToken:   tokenPair.AccessToken,
+		RefreshToken:  tokenPair.RefreshToken,
+		TokenType:     "Bearer",
+		AccessExpiry:  tokenPair.AccessExpiry,
+		RefreshExpiry: tokenPair.RefreshExpiry,
+		User: &dto.UserResponse{
 			ID:        user.ID,
 			Name:      user.Name,
 			Email:     user.Email,
@@ -185,4 +219,161 @@ func (s *AuthService) Login(
 			CreatedAt: user.CreatedAt,
 		},
 	}, nil
+}
+
+// refresh token handlingv(rotating with newone)  >>>>
+func (s *AuthService) Refresh(
+	ctx context.Context,
+	rawRefreshToken string,
+) (*TokenPair, error) {
+
+	logger := middleware.GetLogger(ctx)
+
+	if rawRefreshToken == "" {
+		return nil, ErrInvalidCredentials
+	}
+
+	//  Hash the incoming refresh token
+	oldTokenHash := s.tokenService.HashRefreshToken(
+		rawRefreshToken,
+	)
+
+	// Find the existing refresh token in Redis
+	oldRecord, err := s.refreshTokenRepo.Get(
+		ctx,
+		oldTokenHash,
+	)
+	if err != nil {
+		logger.Warn("refresh token lookup failed")
+		return nil, err
+	}
+
+	// Retrieve the original session expiry.
+	familyExpiry, err := s.refreshTokenRepo.GetFamilyExpiry(
+		ctx,
+		oldRecord.FamilyID,
+	)
+	if err != nil {
+		logger.Warn("failed to retrieve refresh family expiry", "error", err)
+		return nil, err
+	}
+
+	//  Retrieve the user
+	user, err := s.userRepo.GetByID(
+		ctx,
+		oldRecord.UserID,
+	)
+	if err != nil {
+		logger.Warn("refresh failed: user not found")
+		return nil, ErrInvalidCredentials
+	}
+
+	// Check account status
+	if user.Status != string(constants.UserActive) {
+		logger.Warn(
+			"refresh rejected: inactive account",
+			"user_id", user.ID,
+		)
+		return nil, ErrUserInactive
+	}
+
+	//  Generate a new access and refresh token
+	newTokenPair, err := s.tokenService.GenerateTokenPair(
+		user.ID.String(),
+		string(user.Role),
+		oldRecord.FamilyID,
+	)
+	if err != nil {
+		logger.Error("token generation failed", "error", err)
+		return nil, err
+	}
+
+	// Preserve the original session expiry.
+	newTokenPair.RefreshExpiry = familyExpiry
+	//  Hash the new refresh token
+	newTokenHash := s.tokenService.HashRefreshToken(
+		newTokenPair.RefreshToken,
+	)
+
+	// Atomically rotate the old refresh token
+	newRefreshToken := models.RefreshToken{
+		TokenHash: newTokenHash,
+		UserID:    user.ID.String(),
+		FamilyID:  oldRecord.FamilyID,
+		ExpiresAt: newTokenPair.RefreshExpiry,
+	}
+
+	if err := s.refreshTokenRepo.Rotate(
+		ctx,
+		oldTokenHash,
+		newRefreshToken,
+	); err != nil {
+
+		if errors.Is(err, repository.ErrRefreshTokenReused) {
+			logger.Warn(
+				"refresh token reuse detected",
+				"user_id", user.ID,
+				"family_id", oldRecord.FamilyID,
+			)
+		}
+
+		return nil, err
+	}
+
+	logger.Info(
+		"access and refresh tokens rotated successfully",
+		"user_id", user.ID,
+	)
+
+	return newTokenPair, nil
+}
+
+// logout >>>
+func (s *AuthService) Logout(
+	ctx context.Context,
+	rawRefreshToken string,
+) error {
+	if rawRefreshToken == "" {
+		return repository.ErrRefreshTokenNotFound
+	}
+
+	// Hash the raw refresh token
+	tokenHash := s.tokenService.HashRefreshToken(rawRefreshToken)
+
+	// Find the refresh token record
+	tokenRecord, err := s.refreshTokenRepo.Get(ctx, tokenHash)
+	if err != nil {
+		return err
+	}
+
+	// Revoke the entire token family
+	if err := s.refreshTokenRepo.RevokeFamily(
+		ctx,
+		tokenRecord.FamilyID,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// to logout from all devices
+func (s *AuthService) LogoutAll(
+	ctx context.Context,
+	userID string,
+) error {
+
+	if userID == "" {
+		return errors.New("user ID is required")
+	}
+
+	err := s.refreshTokenRepo.RevokeAllFamilies(
+		ctx,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to logout from all devices: %w", err)
+	}
+
+	return nil
 }
