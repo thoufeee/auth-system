@@ -125,3 +125,21 @@ func (r *UserRepository) Exists(
 
 	return count > 0, nil
 }
+
+// to find the user
+func (r *UserRepository) GetByID(
+	ctx context.Context,
+	userID string,
+) (*models.User, error) {
+
+	var user models.User
+
+	err := r.DB.WithContext(ctx).
+		First(&user, "id = ?", userID).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
