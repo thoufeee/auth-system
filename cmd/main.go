@@ -6,7 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	"github.com/thoufeee/auth-system/db"
+
+	db "github.com/thoufeee/auth-system/DB"
 	"github.com/thoufeee/auth-system/handlers"
 	"github.com/thoufeee/auth-system/models"
 	"github.com/thoufeee/auth-system/repository"
@@ -39,7 +40,7 @@ func main() {
 	router := gin.New()
 
 	// Connect PostgreSQL
-	db, err := db.ConnectPostgres()
+	psqlDB, err := db.ConnectPostgres()
 	if err != nil {
 		slog.Error("Database connection failed", "error", err)
 		os.Exit(1)
@@ -47,8 +48,19 @@ func main() {
 
 	slog.Info("PostgreSQL connected successfully")
 
+	//  connect redis
+	redisClient, err := db.ConnectRedis()
+	if err != nil {
+		slog.Error("Redis connection failed", "error", err)
+		os.Exit(1)
+	}
+
+	defer redisClient.Close()
+
+	slog.Info("Redis connected successfully")
+
 	// Auto migrate models
-	if err := db.AutoMigrate(
+	if err := psqlDB.AutoMigrate(
 		&models.User{},
 	); err != nil {
 		slog.Error("Database migration failed", "error", err)
@@ -58,12 +70,18 @@ func main() {
 	slog.Info("Database migration completed")
 
 	// Initialize repository
-	userRepo := repository.NewUserRepository(db)
+	userRepo := repository.NewUserRepository(psqlDB)
 
-	// Initialize service
+	refreshTokenRepo := repository.NewRefreshTokenRepository(
+		redisClient,
+	)
+
+	tokenService := service.NewTokenService(jwtSecret)
+
 	authService := service.NewAuthService(
 		userRepo,
-		jwtSecret,
+		refreshTokenRepo,
+		tokenService,
 	)
 
 	// Initialize handler
